@@ -1,0 +1,136 @@
+package handlers
+
+import (
+	"time"
+	"yakz/models"
+
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+)
+
+var SECRET_KEY = []byte("yakz11")
+
+func CreateUser(db *gorm.DB, user *models.User) error {
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
+
+	if err != nil {
+		return err
+	}
+
+	user.Password = string(hashedPassword)
+	result := db.Create(user)
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
+}
+
+func LoginUser(db *gorm.DB, user *models.User) (string, error) {
+	//get user from email
+	selectedUser := new(models.User)
+	result := db.Where("email = ?", user.Email).First(selectedUser)
+
+	if result.Error != nil {
+		return "", result.Error
+	}
+	// compare password
+	err := bcrypt.CompareHashAndPassword([]byte(selectedUser.Password), []byte(user.Password))
+	if err != nil {
+		return "", err
+	}
+	// pass = return jwt
+	
+	token := jwt.New(jwt.SigningMethodHS256)
+	claims := token.Claims.(jwt.MapClaims)
+	claims["user_id"] = selectedUser.ID
+	claims["role"] = selectedUser.Role
+	claims["exp"] = time.Now().Add(time.Hour * 72).Unix()
+
+	t, err := token.SignedString(SECRET_KEY)
+
+	if err != nil {
+		return "", err
+	}
+
+	return t, nil
+}
+
+
+
+
+
+
+
+
+
+
+
+
+package handlers
+
+import (
+	"fmt"
+	"time"
+	"yakz/config"
+	"yakz/models"
+
+	"github.com/gofiber/fiber/v2"
+)
+
+func RegisterUser(c *fiber.Ctx) error {
+
+	data := config.GetDB()
+
+	user := new(models.User)
+	if err := c.BodyParser(user); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
+	}
+
+	if user.Role == "" {
+		user.Role = "user"
+	}
+
+	err := CreateUser(data, user)
+	if err != nil {
+		return c.SendStatus(fiber.StatusBadRequest)
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Register Successful",
+		"role":    user.Role,
+	})
+}
+
+func UserLogin(c *fiber.Ctx) error {
+	data := config.GetDB()
+
+	user := new(models.User)
+	if err := c.BodyParser(user); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request"})
+	}
+	token, err := LoginUser(data, user)
+	if err != nil {
+		return c.SendStatus(fiber.StatusUnauthorized)
+
+	}
+	var dbUser models.User
+	if err := data.Where("email = ?", user.Email).First(&dbUser).Error; err != nil {
+		return c.Status(401).JSON(fiber.Map{"error": "Invalid email or password"})
+	}
+
+	fmt.Println("Role from DB:", dbUser.Role) // ตรวจสอบค่าของ Role
+
+	c.Cookie(&fiber.Cookie{
+		Name:     "jwt",
+		Value:    token,
+		Expires:  time.Now().Add(time.Hour * 72),
+		HTTPOnly: true,
+	})
+
+	return c.JSON(fiber.Map{
+		"Message": "Login Successful!",
+		"token":   token,
+		"Role":    dbUser.Role,
+	})
+}
